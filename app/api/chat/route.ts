@@ -1,6 +1,11 @@
-// app/api/chat/route.ts
 import { chatWithLangbase } from '../../../utils/langbase';
 import { NextRequest, NextResponse } from 'next/server';
+
+// Define the expected shape of the response
+interface ChatResponse {
+  result: string;
+  threadId?: string;
+}
 
 // Set to edge runtime for potentially better timeout handling
 export const runtime = 'edge';
@@ -9,7 +14,7 @@ export async function POST(request: NextRequest) {
     try {
         // Parse the incoming request
         const data = await request.json();
-        const { message } = data;
+        const { message, threadId } = data;
         
         if (!message) {
             return NextResponse.json(
@@ -18,25 +23,37 @@ export async function POST(request: NextRequest) {
             );
         }
 
+
         // Set a timeout for the entire request handler
-        const timeoutPromise = new Promise((_, reject) => {
+        const timeoutPromise = new Promise<never>((_, reject) => {
             setTimeout(() => {
                 reject(new Error("Request processing timed out"));
             }, 55000); // 55 seconds (just under Vercel's 60s limit)
         });
 
-        // Process the chat request with timeout
-        const responsePromise = chatWithLangbase(message);
+        // Process the chat request with timeout and threadId
+        const responsePromise = chatWithLangbase(message, threadId);
         
-        // Race between completion and timeout
-        const response = await Promise.race([responsePromise, timeoutPromise])
+        // Race between completion and timeout with proper typing
+        const chatResponse = await Promise.race<ChatResponse>([responsePromise, timeoutPromise])
             .catch(error => {
                 // If we get a timeout or other error
                 console.error("API request failed:", error);
                 throw new Error(`Request failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
             });
         
-        return NextResponse.json({ response });
+        // Return both the response text and the threadId
+        return new Response(
+            JSON.stringify({
+                response: chatResponse.result,
+                threadId: chatResponse.threadId
+            }),
+            {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
     } catch (error) {
         console.error("API error:", error);
         
@@ -51,12 +68,17 @@ export async function POST(request: NextRequest) {
             null;
         
         // Return a graceful error response
-        return NextResponse.json(
-            { 
+        return new Response(
+            JSON.stringify({
                 error: errorMessage,
                 partial: partialResponse
-            },
-            { status: 500 }
+            }),
+            {
+                status: 500,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
         );
     }
 }

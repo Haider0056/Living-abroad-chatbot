@@ -1,4 +1,3 @@
-// utils/langbase.ts
 import { Langbase, getRunner } from 'langbase';
 
 const getLangbase = () => {
@@ -32,43 +31,30 @@ export const uploadToMemory = async (content: string, filename: string) => {
             )
         ]);
 
-        console.log("Upload successful:", filename);
         return response;
     } catch (error) {
         console.error("Error uploading to memory:", error);
-        // Fix type error by properly handling unknown error
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         throw new Error(`Upload failed: ${errorMessage}`);
     }
 };
 
 // Send a message to Langbase chat with better timeout handling
-interface Message {
-    role: "user" | "assistant";
-    content: string;
-}
-
-const plainMessage: Message[] = [];
-let threadId: string | undefined;
-
-export const chatWithLangbase = async (message: string) => {
+export const chatWithLangbase = async (message: string, threadId?: string) => {
     try {
-        console.log("Sending message to Langbase...");
-        
-        plainMessage.push({ role: "user", content: message });
+
         
         const startTime = Date.now();
         const response = await langbase.pipe.run({
             name: "living-abroad",
             stream: true,
-            messages: plainMessage,
-            ...(threadId && { threadId })
+            messages: [{ role: "user", content: message }], // Only send the current message
+            ...(threadId && { threadId }) // Include threadId if available
         });
 
-        if (!threadId && response.threadId) {
-            threadId = response.threadId;
-        }
-
+        // Capture thread ID from response
+        const newThreadId = response.threadId || threadId;
+        
         const { stream } = response;
         const runner = getRunner(stream);
 
@@ -100,7 +86,6 @@ export const chatWithLangbase = async (message: string) => {
             // Force resolve after timeout
             setTimeout(() => {
                 if (!isCompleted) {
-                    console.log("Stream processing reached timeout limit");
                     resolve();
                 }
             }, MAX_PROCESSING_TIME);
@@ -110,14 +95,14 @@ export const chatWithLangbase = async (message: string) => {
         if (Date.now() - startTime >= MAX_PROCESSING_TIME) {
             result += "\n\n[Note: Response was truncated due to time constraints]";
         }
-
-        // Add assistant's response to message history
-        plainMessage.push({ role: "assistant", content: result });
         
-        return result;
+        // Return both the result and the threadId
+        return {
+            result,
+            threadId: newThreadId
+        };
     } catch (error) {
         console.error("Langbase Chat Error:", error);
-        // Fix type error by properly handling unknown error
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         throw new Error(`Chat failed: ${errorMessage}`);
     }

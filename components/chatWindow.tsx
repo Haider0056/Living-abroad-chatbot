@@ -9,6 +9,7 @@ export default function ChatWindow() {
   >([]);
   const [streamingMessage, setStreamingMessage] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [threadId, setThreadId] = useState<string | null>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -17,9 +18,41 @@ export default function ChatWindow() {
     }
   }, [chatHistory, streamingMessage]);
 
+  // Load threadId and chat history from localStorage on initial render
+  useEffect(() => {
+    try {
+      // Load threadId
+      const savedThreadId = localStorage.getItem("chatThreadId");
+      if (savedThreadId) {
+        setThreadId(savedThreadId);
+      }
+      
+      // Load chat history
+      const savedHistory = localStorage.getItem("chatHistory");
+      if (savedHistory) {
+        setChatHistory(JSON.parse(savedHistory));
+      }
+    } catch (e) {
+      console.error("Failed to load data from storage:", e);
+    }
+  }, []);
+
+  // Save threadId to localStorage whenever it changes
+  useEffect(() => {
+    if (threadId) {
+      localStorage.setItem("chatThreadId", threadId);
+    }
+  }, [threadId]);
+
+  // Save chat history to localStorage whenever it changes
+  useEffect(() => {
+    if (chatHistory.length > 0) {
+      localStorage.setItem("chatHistory", JSON.stringify(chatHistory));
+    }
+  }, [chatHistory]);
+
   const cleanResponseText = (text: string): string => {
     // First check if the text is wrapped in {"response":"..."} format
-    // Using a more compatible approach without the /s flag
     const responsePattern = /^\s*\{\s*"response"\s*:\s*"([\s\S]+)"\s*\}\s*$/;
     const responseMatch = text.match(responsePattern);
     if (responseMatch) {
@@ -51,56 +84,33 @@ export default function ChatWindow() {
       setIsTyping(true);
       setStreamingMessage("");
       
+      
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ 
+          message,
+          threadId // Send just the threadId
+        }),
       });
 
-      if (!res.body) throw new Error("No response body");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let fullResponse = "";
-
-      // Stream reading function
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) {
-          break;
-        }
-        
-        // Decode the current chunk
-        const chunk = decoder.decode(value, { stream: true });
-        
-        // Process the chunk to extract the response text
-        let chunkText = chunk;
-        if (chunk.startsWith('{"reply":')) {
-          chunkText = chunk.substring('{"reply":'.length);
-          if (chunkText.endsWith("}")) {
-            chunkText = chunkText.substring(0, chunkText.length - 1);
-          }
-          if (chunkText.startsWith('"') && chunkText.endsWith('"')) {
-            chunkText = chunkText.substring(1, chunkText.length - 1);
-          }
-        }
-        
-        // Clean the text
-        chunkText = cleanResponseText(chunkText);
-        
-        // Add to the full response
-        fullResponse += chunkText;
-        
-        // Update streaming message for real-time display
-        setStreamingMessage(fullResponse);
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "API request failed");
       }
 
-      // Final cleanup
-      fullResponse = cleanResponseText(fullResponse);
-      setIsTyping(false);
+      const responseData = await res.json();
       
-      return fullResponse;
+      // Update threadId from response
+      if (responseData.threadId) {
+        setThreadId(responseData.threadId);
+      }
+      
+      const responseText = responseData.response || "";
+      const cleanedResponse = cleanResponseText(responseText);
+      
+      setIsTyping(false);
+      return cleanedResponse;
     } catch (error) {
       console.error("Chat failed:", error);
       setIsTyping(false);
@@ -120,51 +130,57 @@ export default function ChatWindow() {
       : [])
   ];
 
+
+
   return (
-    <div className="flex flex-wrap w-full h-full">
-      <ChatBotWidget
-        callApi={callApiHandler}
-        onBotResponse={(response: string) => {
-          // Only add the response to history if it's not already being streamed
-          if (!isTyping) {
+    <div className="flex flex-col w-full h-full">
+
+      
+      <div className="flex-1">
+        <ChatBotWidget
+          callApi={callApiHandler}
+          onBotResponse={(response: string) => {
+            // Only add the response to history if it's not already being streamed
+            if (!isTyping) {
+              setChatHistory((prev) => [
+                ...prev,
+                { sender: "bot", text: cleanResponseText(response) },
+              ]);
+            }
+            setStreamingMessage("");
+          }}
+          handleNewMessage={(newMessage: string | { content?: string }) => {
+            const messageText = typeof newMessage === "string"
+              ? newMessage
+              : newMessage.content || JSON.stringify(newMessage);
+              
             setChatHistory((prev) => [
               ...prev,
-              { sender: "bot", text: cleanResponseText(response) },
+              { sender: "user", text: messageText },
             ]);
-          }
-          setStreamingMessage("");
-        }}
-        handleNewMessage={(newMessage: string | { content?: string }) => {
-          const messageText = typeof newMessage === "string"
-            ? newMessage
-            : newMessage.content || JSON.stringify(newMessage);
-            
-          setChatHistory((prev) => [
-            ...prev,
-            { sender: "user", text: messageText },
-          ]);
-        }}
-        messages={formattedMessages}
-        primaryColor="#3498db"
-        inputMsgPlaceholder="Type your message..."
-        chatbotName="Customer Support"
-        isTypingMessage={isTyping ? "Typing..." : ""}
-        IncommingErrMsg="Oops! Something went wrong. Try again."
-        chatIcon={<div>O</div>}
-        botIcon={<div>B</div>}
-        botFontStyle={{
-          fontFamily: "Arial",
-          fontSize: "14px",
-          color: "#006633",
-        }}
-        typingFontStyle={{
-          fontFamily: "Arial",
-          fontSize: "12px",
-          color: "#888",
-          fontStyle: "italic",
-        }}
-        useInnerHTML={true}
-      />
+          }}
+          messages={formattedMessages}
+          primaryColor="#3498db"
+          inputMsgPlaceholder="Type your message..."
+          chatbotName="Customer Support"
+          isTypingMessage={isTyping ? "Typing..." : ""}
+          IncommingErrMsg="Oops! Something went wrong. Try again."
+          chatIcon={<div>O</div>}
+          botIcon={<div>B</div>}
+          botFontStyle={{
+            fontFamily: "Arial",
+            fontSize: "14px",
+            color: "#006633",
+          }}
+          typingFontStyle={{
+            fontFamily: "Arial",
+            fontSize: "12px",
+            color: "#888",
+            fontStyle: "italic",
+          }}
+          useInnerHTML={true}
+        />
+      </div>
     </div>
   );
 }
